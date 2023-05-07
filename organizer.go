@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"fmt"
 	"github.com/dave/dst/decorator"
@@ -15,6 +16,8 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
+	vanillaFmt "go/format"
 
 	_ "unsafe"
 
@@ -40,12 +43,24 @@ func format(
 ) ([]byte, error)
 
 type FileStruct struct {
-	pkg, imports, body []byte
+	imports, body []byte
+}
+
+func AddBody(body []byte, fs *FileStruct) {
+	fs.body = body
+}
+
+func AddImports(imports []byte, fs *FileStruct) {
+	fs.imports = imports
+}
+func NewFileStruct() *FileStruct {
+	return &FileStruct{}
 }
 
 type AbstractSxTree struct {
-	byteMap  map[string][]byte
-	advanced map[string]string
+	byteMap   map[string][]byte
+	advanced  map[string]string
+	separator map[string]*FileStruct
 	//advM            map[string][]string
 	fset            *token.FileSet
 	astFile         *ast.File
@@ -102,7 +117,7 @@ func (abs *AbstractSxTree) VanillaCleaner(files []string) error {
 			if err = abs.NewTree(b, files[i]); err != nil {
 				return fmt.Errorf("NewTree in VanillaCleaner %w", err)
 			}
-			abs.astFile, err = parser.ParseFile(abs.fset, files[i], b, parser.ParseComments)
+			abs.astFile, err = parser.ParseFile(abs.fset, files[i], b, parser.ImportsOnly)
 			if err != nil {
 				log.Fatalln(err)
 			}
@@ -214,7 +229,19 @@ func (abs *AbstractSxTree) NewTree(b []byte, filename string) error {
 	abs.astFile, abs.sourceAdj, abs.indentAdj = file, sourceAdj, ident
 	return nil
 }
+func (abs *AbstractSxTree) ReleaseTreeData() {
+	abs.astFile, abs.sourceAdj, abs.fset = nil, nil, nil
+}
+func (abs *AbstractSxTree) SXX(file string, b []byte) error {
+	err := abs.NewTree(b, file)
+	if err != nil {
+		return fmt.Errorf("%w", err)
+	}
+	//impr := astutil.Imports(abs.fset, abs.astFile)
+	astutil.AddImport(abs.fset, abs.astFile, "")
 
+	return nil
+}
 func (abs *AbstractSxTree) readImports(str []string, file string, b []byte) error {
 	err := abs.NewTree(b, file)
 	if err != nil {
@@ -248,14 +275,44 @@ func (abs *AbstractSxTree) readImports(str []string, file string, b []byte) erro
 	return nil
 }
 
-var (
-	kek, _  = os.Create("kek.txt")
-	lol     = log.New(kek, "", 0)
-	kek2, _ = os.Create("kek2.txt")
-	lol2    = log.New(kek2, "", 0)
-)
+func (abs *AbstractSxTree) WriteBody(file string) error {
+	b, _ := os.ReadFile(file)
 
+	err := abs.NewTree(b, file)
+	if err != nil {
+		return fmt.Errorf("%w", err)
+	}
+	abs.astFile, err = parser.ParseFile(abs.fset, "", b, parser.ImportsOnly)
+	if err != nil {
+		log.Fatalln(err)
+	}
+
+	for i := 0; i < len(abs.astFile.Decls); i++ {
+		if abs.astFile.Decls[i].(*ast.GenDecl).Tok != token.IMPORT && abs.astFile.Decls[i].(*ast.GenDecl).Tok != token.PACKAGE {
+		}
+
+	}
+	//for i := 0; i < len(abs.astFile.Decls); i++ {
+	//	d := abs.astFile.Decls[i]
+	//	switch d.(type) {
+	//	case *ast.FuncDecl:
+	//	case *ast.GenDecl:
+	//
+	//		dd := d.(*ast.GenDecl)
+	//
+	//		if dd.Tok == token.IMPORT {
+	//
+	//
+	//		}
+	//	}
+	//}
+
+	//out, _ := format(abs.fset, abs.astFile, abs.sourceAdj, abs.indentAdj, b, cfg)
+
+	return nil
+}
 func (abs *AbstractSxTree) ClearImports(files []string) error {
+	abs.ReleaseTreeData()
 	err := abs.DaveCleaner(files)
 	if err != nil {
 		return fmt.Errorf("DaveCleaner import %w", err)
@@ -309,21 +366,11 @@ func (abs *AbstractSxTree) WriteImps(files []string) {
 				logger.Log().Errorf("vanilla clear import %v", err)
 				os.Exit(1)
 			}
-			//err := abs.DaveCleaner(r, files[i])
-			//if err != nil {
-			//	logger.Log().Errorf("dave clear import %v", err)
-			//	os.Exit(1)
-			//}
 			re, err := os.ReadFile(files[i])
 			if err != nil {
 				logger.Log().Errorf("error ReadFile %v", err)
 				os.Exit(1)
 			}
-
-			//if err = abs.TrimSpace(re, files[i]); err != nil {
-			//	logger.Log().Errorf("TrimSpace %v", err)
-			//	os.Exit(1)
-			//}
 			str = abs.Sort(str)
 
 			if err = abs.WriteImports(re, str, files[i]); err != nil {
@@ -341,24 +388,41 @@ func main() {
 	//lol3.Println(package_collector.Packages)
 	files := package_collector.GoFiles()
 	abs := &AbstractSxTree{
-		byteMap:  make(map[string][]byte),
-		advanced: make(map[string]string),
-		//advM:     make(map[string][]string),
+		separator: make(map[string]*FileStruct),
+		advanced:  make(map[string]string),
 	}
-
-	//if err := abs.Read(files); err != nil {
-	//	logger.Log().Errorf("error ReadFile %v", err)
-	//	os.Exit(1)
-	//}
-	//
+	for i := range files {
+		abs.separator[files[i]] = NewFileStruct()
+		abs.GetImports(files[i])
+		abs.GetBody(files[i])
+		newBody := Swap(abs.separator[files[i]].imports, abs.separator[files[i]].body)
+		abs.separator[files[i]].body = newBody
+	}
 	abs.WriteImps(files)
 
-	err := abs.ClearImports(files)
-	if err != nil {
-		logger.Log().Errorf("error ReadFile %v", err)
+	if err := abs.ClearImports(files); err != nil {
+		logger.Log().Errorf("error ClearImports %v", err)
 		os.Exit(1)
 	}
 
+	for i := range files {
+		abs.separator[files[i]].imports = append(abs.separator[files[i]].imports, abs.separator[files[i]].body...)
+		os.WriteFile(files[i], []byte(""), os.ModeAppend)
+		os.WriteFile(files[i], abs.separator[files[i]].imports, os.ModeAppend)
+	}
+	for i := range files {
+		err := GoFmt(files[i])
+		if err != nil {
+			logger.Log().Errorf("error GoFmt %v in file: %s ", err, files[i])
+			continue
+		}
+	}
+}
+func (abs *AbstractSxTree) SortImportsAst(src []byte) {
+	fset := token.NewFileSet()
+	f, _ := parser.ParseFile(fset, "", src, parser.ImportsOnly)
+
+	ast.SortImports(fset, f)
 }
 
 func (abs *AbstractSxTree) ImportsFromFiles(b []byte, file string) []*ast.ImportSpec {
@@ -520,8 +584,61 @@ func (abs *AbstractSxTree) WriteImports(b []byte, str []string, file string) err
 	out, _ := format(abs.fset, abs.astFile, abs.sourceAdj, abs.indentAdj, b, cfg)
 
 	buf.Write(out)
-	lol.Println(string(buf.Bytes()))
+	AddImports(buf.Bytes(), abs.separator[file])
 
+	return nil
+}
+
+func Swap(imports, body []byte) []byte {
+	scannerImports := bufio.NewScanner(bytes.NewReader(imports))
+	scannerImports.Split(bufio.ScanLines)
+	scannerBody := bufio.NewScanner(bytes.NewReader(body))
+	scannerBody.Split(bufio.ScanLines)
+	var newbody []byte
+	var bodyBB, importsBB [][]byte
+	for scannerImports.Scan() {
+		importsBB = append(importsBB, scannerImports.Bytes())
+	}
+	for scannerBody.Scan() {
+		bodyBB = append(bodyBB, scannerBody.Bytes())
+	}
+
+	linesBeingCut := len(importsBB)
+	bodyBB = append(bodyBB[linesBeingCut:])
+	for i := range bodyBB {
+		newbody = append(newbody, bodyBB[i]...)
+		newbody = append(newbody, []byte("\n")...)
+	}
+
+	return newbody
+}
+
+func (abs *AbstractSxTree) GetImports(file string) error {
+	abs.ReleaseTreeData()
+	b, _ := os.ReadFile(file)
+	err := abs.NewTree(b, file)
+	if err != nil {
+		return fmt.Errorf("%w", err)
+	}
+	abs.astFile, err = parser.ParseFile(abs.fset, "", b, parser.ImportsOnly)
+	if err != nil {
+		log.Fatalln(err)
+	}
+
+	out, _ := format(abs.fset, abs.astFile, abs.sourceAdj, abs.indentAdj, b, cfg)
+	AddImports(out, abs.separator[file])
+	return nil
+}
+func (abs *AbstractSxTree) GetBody(file string) error {
+	abs.ReleaseTreeData()
+	b, _ := os.ReadFile(file)
+	err := abs.NewTree(b, file)
+	if err != nil {
+		return fmt.Errorf("%w", err)
+	}
+
+	out, _ := format(abs.fset, abs.astFile, abs.sourceAdj, abs.indentAdj, b, cfg)
+	AddBody(out, abs.separator[file])
 	return nil
 }
 func SortImportsByRank(importsFromFile []string, rank int) []string {
@@ -536,4 +653,21 @@ func SortImportsByRank(importsFromFile []string, rank int) []string {
 	}
 
 	return rankedList
+}
+func GoFmt(path string) error {
+
+	read, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+
+	fmted, err := vanillaFmt.Source(read)
+	if err != nil {
+		return err
+	}
+	err = os.WriteFile(path, fmted, 0666)
+	if err != nil {
+		return err
+	}
+	return nil
 }
